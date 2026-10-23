@@ -15,7 +15,7 @@ async function api(method,path,body){
 }
 // WAS 응답 ↔ 화면용 데이터
 const uiPet=p=>({id:p.pid,name:p.pname,type:p.type,breed:p.breed||'',gender:p.gender||'',age:p.age??'',weight:p.weight??'',notes:p.notes||''});
-const uiOwner=o=>({id:o.oid,name:o.oname,phone:o.pnum,addr:o.address||'',pets:o.pets.map(uiPet)});
+const uiOwner=o=>({id:o.oid,name:o.oname,phone:o.pnum,addr:o.address||'',pets:o.pets.map(uiPet),active:o.active_pids});
 const uiConsult=c=>({id:c.cid,petId:c.pid,petName:c.pname,vet:c.vet_name,date:c.date,purpose:c.purpose,diagnosis:c.diagnosis||'',state:c.status});
 const apiPet=p=>({pname:p.name,type:p.type,breed:p.breed||null,gender:p.gender||null,age:p.age===''?null:Number(p.age),weight:p.weight===''?null:p.weight,notes:p.notes||null});
 
@@ -29,14 +29,15 @@ const PLUS='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-wi
 function setUser(u){S.user=u;try{u?sessionStorage.setItem('user',JSON.stringify(u)):sessionStorage.removeItem('user');}catch(e){}}
 
 // 대기·진료중인 방문이 있는 동물 id → 진료가 끝날 때까지 방문 등록 버튼 비활성화
-async function activePets(pids){const hs=await Promise.all(pids.map(pid=>api('GET',`/desk/pet/${pid}/consultation`)));return pids.filter((pid,i)=>hs[i].some(c=>c.status!=='종료'));}
 const VISIT_OFF='title="진료가 끝나면 다시 등록할 수 있습니다" disabled';
 
 // 화면별로 필요한 데이터를 WAS에서 가져옴
 const LOAD={
-  search:async(r,d)=>{d.rows=(await api('GET','/desk/owner?name='+encodeURIComponent(S.q.trim()))).map(uiOwner);   // 검색어가 없으면 지점 보호자 전체
-    d.owner=d.rows.find(o=>o.id===S.sel);if(!d.owner){S.sel=null;return;}d.active=await activePets(d.owner.pets.map(p=>p.id));},
-  owner:async(r,d)=>{d.owner=uiOwner(await api('GET','/desk/owner/'+r.id));d.active=await activePets(d.owner.pets.map(p=>p.id));},
+  search:async(r,d,keep)=>{
+    if(keep&&S.d.rows){d.rows=S.d.rows;if(d.rows.some(o=>o.id===S.sel)){const o=uiOwner(await api('GET','/desk/owner/'+S.sel));d.rows=d.rows.map(x=>x.id===o.id?o:x);}}   // 목록은 그대로, 선택한 보호자만 다시 조회
+    else d.rows=(await api('GET','/desk/owner?name='+encodeURIComponent(S.q.trim()))).map(uiOwner);   // 검색어가 없으면 최근 등록 20명
+    d.owner=d.rows.find(o=>o.id===S.sel);if(!d.owner){S.sel=null;return;}d.active=d.owner.active;},
+  owner:async(r,d)=>{d.owner=uiOwner(await api('GET','/desk/owner/'+r.id));d.active=d.owner.active;},
   pet:async(r,d)=>{const [p,o,h]=await Promise.all([api('GET','/desk/pet/'+r.id),api('GET','/desk/owner/'+r.oid),api('GET',`/desk/pet/${r.id}/consultation`)]);
     d.pet=uiPet(p);d.owner=uiOwner(o);d.hist=h.map(uiConsult);d.active=d.hist.some(c=>c.state!=='종료')?[d.pet.id]:[];},
   vlist:async(r,d)=>{d.list=(await api('GET','/vet/consultation')).map(uiConsult);},
@@ -44,8 +45,8 @@ const LOAD={
     const [cd,h]=await Promise.all([api('GET','/vet/consultation/'+c.id),api('GET','/vet/consultation/history/'+c.petId)]);
     d.cur=uiConsult(cd);d.curPet=uiPet(cd.pet);d.hist=h.map(uiConsult).filter(x=>x.state==='종료');},
 };
-async function refresh(){
-  try{const d={};if(S.user&&LOAD[S.route.name])await LOAD[S.route.name](S.route,d);S.d=d;render();return true;}
+async function refresh(keep){   // keep: 검색 목록은 다시 받지 않음 (자동 새로고침, 보호자 선택)
+  try{const d={};if(S.user&&LOAD[S.route.name])await LOAD[S.route.name](S.route,d,keep);S.d=d;render();return true;}
   catch(e){if(!S.user){S.route={name:'login'};render();return true;}toast(e.message);return false;}
 }
 async function go(name,params={}){
@@ -83,15 +84,13 @@ function vLogin(){
       <form onsubmit="event.preventDefault();login()">
         <label class="l">아이디</label><input class="in" id="lid" value="${S.saveId?'desk1':''}" autocomplete="off">
         <label class="l">비밀번호</label>
-        <div class="pw"><input class="in" id="lpw" type="${S.showPw?'text':'password'}" value="1234" style="padding-right:38px">
+        <div class="pw"><input class="in" id="lpw" type="${S.showPw?'text':'password'}" style="padding-right:38px">
           <button type="button" onclick="S.showPw=!S.showPw;const v=$('#lpw').value,i=$('#lid').value;render();$('#lpw').value=v;$('#lid').value=i"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
         <label class="chk"><input type="checkbox" ${S.saveId?'checked':''} onchange="S.saveId=this.checked">아이디 저장</label>
         <div id="lerr" class="ferr" style="margin:12px 0 0;display:block;min-height:16px"></div>
         <button class="btn p" style="width:100%;height:46px;margin-top:6px;font-size:14px">로그인</button>
       </form>
       <div class="muted" style="margin-top:22px;font-size:12px;text-align:center">계정 문의는 지점 관리자에게 요청하세요.</div>
-      <div style="margin-top:28px;padding:12px 14px;background:var(--bg);border-radius:4px;font-size:12px;color:var(--tx2);line-height:1.7">
-        <b>프로토타입 테스트 계정</b> (비밀번호 1234)<br>데스크 <code>desk1</code> · 수의사 <code>vet1</code>(이수의) · <code>vet2</code>(박수의)</div>
     </div></div></div>`;
 }
 async function login(){
@@ -107,7 +106,7 @@ async function logout(){try{await api('DELETE','/login');}catch(e){}setUser(null
 function vSearch(){
   const q=S.q.trim(),rows=S.d.rows||[],o=S.d.owner;
   const hl=n=>q?esc(n).replace(esc(q),`<b style="color:var(--ac)">${esc(q)}</b>`):esc(n);
-  // 좌측: 보호자 목록 (전체, 조회하면 이름으로 필터링) / 선택하면 페이지 이동 없이 우측에 채워짐
+  // 좌측: 보호자 목록 (최근 등록 20명, 조회하면 이름으로 필터링) / 선택하면 페이지 이동 없이 우측에 채워짐
   const list=`<div class="sec"><h2>보호자<em>${rows.length}</em></h2></div>
     <table class="tbl"><colgroup><col style="width:80px"><col style="width:120px"><col></colgroup>
     <thead><tr><th>보호자명</th><th>휴대폰</th><th>반려동물</th></tr></thead><tbody>
@@ -121,7 +120,7 @@ function vSearch(){
     <input class="in" id="q" style="width:480px;height:38px" placeholder="보호자 이름" value="${esc(S.q)}" autofocus>
     <button class="btn p l">조회</button></form><div class="split"><div>${list}</div><div>${detail}</div></div></div>`;
 }
-function selOwner(id){S.sel=id;S.edit=null;S.addPet=null;S.errs={};S.flash='';refresh();}
+function selOwner(id){S.sel=id;S.edit=null;S.addPet=null;S.errs={};S.flash='';refresh(true);}
 
 /* ===================== DESK: REGISTER ===================== */
 const blankPet=()=>({name:'',type:'개',breed:'',gender:'',age:'',weight:'',notes:''});
@@ -313,7 +312,7 @@ setInterval(()=>{
   if(!S.user||document.hidden)return;
   const r=S.route.name;
   if(document.activeElement&&document.activeElement.matches('input,textarea,select'))return;
-  if(r==='vlist'||((r==='owner'||r==='pet'||r==='search')&&!S.edit&&!S.addPet&&!S.visitPid))refresh();
+  if(r==='vlist'||((r==='owner'||r==='pet'||r==='search')&&!S.edit&&!S.addPet&&!S.visitPid))refresh(true);
 },5000);
 async function startConsult(id){try{await api('PATCH',`/vet/consultation/${id}/start`);}catch(e){return toast(e.message);}go('consult');}
 
